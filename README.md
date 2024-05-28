@@ -68,3 +68,88 @@ This section has moved here: [https://facebook.github.io/create-react-app/docs/d
 ### `npm run build` fails to minify
 
 This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+
+
+#!/bin/bash
+
+# Declare variables
+declare -a GITLAB_API_VERSIONS
+declare DEPLOYED_APP_VERSIONS_IN_PCF
+declare PCF_API_URL
+declare PCF_USER_NAME
+declare PCF_USER_PWD
+declare PCF_ENV
+declare PCF_ORG
+
+# Function to set PCF login parameters
+setPcfLoginParams () {
+  SRC_ENV=$1
+  case "$SRC_ENV" in
+    "development" | "developmentA" | "qa" | "custperf" | "cat")
+      PCF_ORG="USA.MRCH.APP.OCOM"
+      if [ "$SRC_ENV" == "cat" ] || [ "$SRC_ENV" == "custperf" ]; then
+        PCF_ORG="USA.MRCH.APP.OCOM.CAT"
+      fi
+      PCF_USER_NAME="svc-devopsecomm"
+      PCF_USER_PWD=$(secrets getValue "svc-devopsecomm")
+      PCF_API_URL="https://api.system.us-$(infra.name)1-np2.1dc.com"
+      ;;
+    "prod" | "cert")
+      PCF_ORG="USA.MRCH.APP.OCOM"
+      PCF_USER_NAME="svc-devopsecommprod"
+      PCF_USER_PWD=$(secrets getValue "svc-devopsecommprod-escaped")
+      PCF_API_URL="https://api.system.us-$(infra.name)1-ip01.1dc.com"
+      ;;
+  esac
+}
+
+# Function to get application name
+getApplicationName () {
+  SERVICE_NAME=$1
+  FORMATTED_SERVICE_NAME=$(echo "$SERVICE_NAME" | sed -r 's/[-]+/ /g')
+  APPLICATION_NAME=$(cf apps | grep -E "^${FORMATTED_SERVICE_NAME}$" | grep started | awk '{print $1}' | sort -r | head -n 1)
+  if [ -z "$APPLICATION_NAME" ]; then
+    APPLICATION_NAME=$(cf apps | grep -E "^${SERVICE_NAME}$" | grep started | awk '{print $1}' | sort -r | head -n 1)
+  fi
+  echo "$APPLICATION_NAME"
+}
+
+# Function to get deployed app versions in PCF
+getDeployedAppVersionsInPCF () {
+  declare -i RETRY_COUNT=0
+  MAX_RETRIES=3
+  echo "Retrieving all apps in PCF..."
+  cf apps | grep "commercehub" | grep started | awk '{print $1}' > cf_all_apps.txt
+  DEPLOYED_APP_VERSIONS_IN_PCF="("
+
+  for service in "${GITLAB_API_VERSIONS[@]}"; do
+    SERVICE_NAME=$(getApplicationName "$service" cf_all_apps.txt)
+    echo "SERVICE_NAME = $SERVICE_NAME"
+    if [ ! -z "$SERVICE_NAME" ]; then
+      VERSION=$(cf env "$SERVICE_NAME" | grep FDC_VERSION | awk '{print $2}')
+      echo "VERSION = $VERSION"
+      while [ -z "$VERSION" ] && [ "$RETRY_COUNT" -lt "$MAX_RETRIES" ]; do
+        VERSION=$(cf env "$SERVICE_NAME" | grep FDC_VERSION | awk '{print $2}')
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+      done
+      if [ ! -z "$VERSION" ]; then
+        DEPLOYED_APP_VERSIONS_IN_PCF+="$service=\"$VERSION\" "
+      else
+        DEPLOYED_APP_VERSIONS_IN_PCF+="$service=\"0\" "
+      fi
+    fi
+  done
+  DEPLOYED_APP_VERSIONS_IN_PCF+=")"
+  echo "$DEPLOYED_APP_VERSIONS_IN_PCF"
+
+  # Retrieve versions from the upper environment
+  echo "Retrieve versions from upper env...$PCF_ENV"
+  setPcfLoginParams "$PCF_ENV"
+  cf login -a "$PCF_API_URL" -u "$PCF_USER_NAME" -p "$PCF_USER_PWD" -o "$PCF_ORG"
+  getDeployedAppVersionsInPCF
+  cf logout
+  export DEPLOYED_APP_VERSIONS_IN_PCF
+}
+
+# Main logic
+# Here you can add calls to your functions or additional logic as required
